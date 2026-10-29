@@ -34,7 +34,10 @@ class SpeedTestEngine {
         val downloadTestCount: Int = 20,
         val pingFirst: Boolean = true,
         val maxConcurrentDownloads: Int = 5,
-        val maxConcurrentPings: Int = 8
+        val maxConcurrentPings: Int = 8,
+        val enableTargetProbe: Boolean = false,
+        val targetDomain: String = "",
+        val targetWsPath: String = ""
     )
 
     /**
@@ -92,24 +95,78 @@ class SpeedTestEngine {
                         0
                     }
 
-                    if (config.pingOnly) {
-                        pingResults.forEach { (ip, pingResult) ->
-                            val result = SpeedTestResult(
-                                ipAddress = ip,
-                                packetsSent = pingResult.sent,
-                                packetsReceived = pingResult.received,
-                                packetLoss = pingResult.packetLoss,
-                                avgLatency = pingResult.avgLatency,
-                                downloadSpeed = 0.0,
-                                regionCode = "N/A"
+                    val qualifiedPingResults = if (config.enableTargetProbe && config.targetDomain.isNotBlank()) {
+                        val cleanedDomain = DomainProber.cleanDomain(config.targetDomain)
+                        val totalProbes = pingResults.size
+                        val probeCompleted = AtomicInteger(0)
+                        val isWs = config.targetWsPath.isNotBlank()
+                        val probeLabel = if (isWs) "专属通道穿透校验" else "自定义域名连通性校验"
+
+                        if (pingResults.isNotEmpty()) {
+                            onProgress(
+                                TestProgress(
+                                    current = 0,
+                                    total = totalProbes,
+                                    currentIp = cleanedDomain,
+                                    status = "正在执行 $probeLabel (0/$totalProbes)..."
+                                )
                             )
+                        }
+                        val probeSemaphore = Semaphore(config.maxConcurrentPings.coerceAtLeast(1))
+                        coroutineScope {
+                            pingResults.map { pair ->
+                                async {
+                                    if (shouldStop.get()) return@async null
+                                    probeSemaphore.withPermit {
+                                        if (shouldStop.get()) return@withPermit null
+                                        val isOk = if (isWs) {
+                                            DomainProber.probeWebSocket(pair.first, cleanedDomain, config.targetWsPath)
+                                        } else {
+                                            DomainProber.probeDomain(pair.first, cleanedDomain)
+                                        }
+                                        val done = probeCompleted.incrementAndGet()
+                                        onProgress(
+                                            TestProgress(
+                                                current = done,
+                                                total = totalProbes,
+                                                currentIp = pair.first,
+                                                status = "正在执行 $probeLabel ($done/$totalProbes)..."
+                                            )
+                                        )
+                                        if (isOk) pair else null
+                                    }
+                                }
+                            }.awaitAll().filterNotNull()
+                        }
+                    } else {
+                        pingResults
+                    }
+
+                    if (config.pingOnly) {
+                        val pingOnlyResults = coroutineScope {
+                            qualifiedPingResults.map { (ip, pingResult) ->
+                                async {
+                                    val regionCode = CloudflareTrace.getRegionCode(ip)
+                                    SpeedTestResult(
+                                        ipAddress = ip,
+                                        packetsSent = pingResult.sent,
+                                        packetsReceived = pingResult.received,
+                                        packetLoss = pingResult.packetLoss,
+                                        avgLatency = pingResult.avgLatency,
+                                        downloadSpeed = 0.0,
+                                        regionCode = regionCode
+                                    )
+                                }
+                            }.awaitAll()
+                        }
+                        pingOnlyResults.forEach { result ->
                             results.add(result)
                             onResult(result)
                         }
                         return@withContext
                     }
 
-                    val sortedPingResults = pingResults
+                    val sortedPingResults = qualifiedPingResults
                         .sortedBy { it.second.avgLatency }
                         .take(config.downloadTestCount)
 
@@ -132,6 +189,10 @@ class SpeedTestEngine {
                         async {
                             if (shouldStop.get()) return@async null
 
+                            val regionCodeDeferred = async(Dispatchers.IO) {
+                                CloudflareTrace.getRegionCode(ip)
+                            }
+
                             downloadSemaphore.withPermit {
                                 if (shouldStop.get()) return@withPermit null
 
@@ -149,6 +210,8 @@ class SpeedTestEngine {
                                         return@withPermit null
                                     }
 
+                                    val regionCode = regionCodeDeferred.await()
+
                                     SpeedTestResult(
                                         ipAddress = ip,
                                         packetsSent = pingResult.sent,
@@ -156,7 +219,7 @@ class SpeedTestEngine {
                                         packetLoss = pingResult.packetLoss,
                                         avgLatency = pingResult.avgLatency,
                                         downloadSpeed = downloadSpeed,
-                                        regionCode = "N/A"
+                                        regionCode = regionCode
                                     )
                                 } finally {
                                     val finished = completedDownloads.incrementAndGet()
@@ -234,6 +297,7 @@ class SpeedTestEngine {
                             continue
                         }
 
+                        val regionCode = CloudflareTrace.getRegionCode(ip)
                         val result = SpeedTestResult(
                             ipAddress = ip,
                             packetsSent = pingResult.sent,
@@ -241,7 +305,7 @@ class SpeedTestEngine {
                             packetLoss = pingResult.packetLoss,
                             avgLatency = pingResult.avgLatency,
                             downloadSpeed = downloadSpeed,
-                            regionCode = "N/A"
+                            regionCode = regionCode
                         )
 
                         results.add(result)
