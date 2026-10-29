@@ -216,6 +216,16 @@ class SpeedTestViewModel(private val application: Application) : ViewModel() {
     // 新增配置状态：结果排序方式
     private val _sortByLatency = MutableStateFlow(false)
     val sortByLatency: StateFlow<Boolean> = _sortByLatency.asStateFlow()
+
+    // 统一配置状态：目标域名/节点连通性校验
+    private val _enableTargetProbe = MutableStateFlow(false)
+    val enableTargetProbe: StateFlow<Boolean> = _enableTargetProbe.asStateFlow()
+
+    private val _targetDomain = MutableStateFlow("")
+    val targetDomain: StateFlow<String> = _targetDomain.asStateFlow()
+
+    private val _targetWsPath = MutableStateFlow("")
+    val targetWsPath: StateFlow<String> = _targetWsPath.asStateFlow()
     
     // IP 范围 - 默认使用内置 IPv4
     private var ipRanges: List<IpRangeParser.IpRange> = IpRangeParser.parseIpFile(builtInIpv4Ranges)
@@ -254,6 +264,21 @@ class SpeedTestViewModel(private val application: Application) : ViewModel() {
         private const val CLOUDFLARE_IPV6_URL = "https://www.cloudflare.com/ips-v6"
         // 历史记录相关键
         private const val HISTORY_RECORDS_KEY = "history_records"
+        // 全量配置持久化键
+        private const val PREF_TEST_COUNT = "pref_test_count"
+        private const val PREF_PING_COUNT = "pref_ping_count"
+        private const val PREF_MAX_CONCURRENT_PINGS = "pref_max_concurrent_pings"
+        private const val PREF_ENABLE_DOWNLOAD_TEST = "pref_enable_download_test"
+        private const val PREF_DOWNLOAD_TEST_COUNT = "pref_download_test_count"
+        private const val PREF_DOWNLOAD_DURATION = "pref_download_duration"
+        private const val PREF_SPEED_LIMIT = "pref_speed_limit"
+        private const val PREF_LATENCY_LIMIT = "pref_latency_limit"
+        private const val PREF_USE_PROXY = "pref_use_proxy"
+        private const val PREF_PROXY_URL = "pref_proxy_url"
+        private const val PREF_USE_IPV6 = "pref_use_ipv6"
+        private const val PREF_ENABLE_TARGET_PROBE = "pref_enable_target_probe"
+        private const val PREF_TARGET_DOMAIN = "pref_target_domain"
+        private const val PREF_TARGET_WS_PATH = "pref_target_ws_path"
         
         /**
          * ViewModel Factory
@@ -278,6 +303,26 @@ class SpeedTestViewModel(private val application: Application) : ViewModel() {
             loadLocalIpRanges()
             // 应用启动时加载历史记录
             loadHistoryRecords()
+            // 应用启动时加载全量持久化配置
+            try {
+                val prefs = application.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                _testCount.value = prefs.getInt(PREF_TEST_COUNT, 100)
+                _pingCount.value = prefs.getInt(PREF_PING_COUNT, 3)
+                _maxConcurrentPings.value = prefs.getInt(PREF_MAX_CONCURRENT_PINGS, 8)
+                _enableDownloadTest.value = prefs.getBoolean(PREF_ENABLE_DOWNLOAD_TEST, true)
+                _downloadTestCount.value = prefs.getInt(PREF_DOWNLOAD_TEST_COUNT, 20)
+                _downloadDuration.value = prefs.getInt(PREF_DOWNLOAD_DURATION, 10)
+                _speedLimit.value = prefs.getFloat(PREF_SPEED_LIMIT, 0f).toDouble()
+                _latencyLimit.value = prefs.getFloat(PREF_LATENCY_LIMIT, 0f).toDouble()
+                _useProxy.value = prefs.getBoolean(PREF_USE_PROXY, false)
+                _proxyUrl.value = prefs.getString(PREF_PROXY_URL, "") ?: ""
+                _useIpv6.value = prefs.getBoolean(PREF_USE_IPV6, false)
+                _enableTargetProbe.value = prefs.getBoolean(PREF_ENABLE_TARGET_PROBE, false)
+                _targetDomain.value = prefs.getString(PREF_TARGET_DOMAIN, "") ?: ""
+                _targetWsPath.value = prefs.getString(PREF_TARGET_WS_PATH, "") ?: ""
+            } catch (e: Exception) {
+                // 忽略读取错误
+            }
             
             // 监听排序方式变化，重新排序当前结果
             _sortByLatency.collect { sortByLatency ->
@@ -297,68 +342,80 @@ class SpeedTestViewModel(private val application: Application) : ViewModel() {
     /**
      * 更新测试数量
      */
+    private fun savePref(action: (android.content.SharedPreferences.Editor) -> Unit) {
+        try {
+            val prefs = application.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            val editor = prefs.edit()
+            action(editor)
+            editor.apply()
+        } catch (e: Exception) {
+            // 忽略持久化错误
+        }
+    }
+
     fun updateTestCount(count: Int) {
         _testCount.value = count
+        savePref { it.putInt(PREF_TEST_COUNT, count) }
     }
-    
-    /**
-     * 更新 Ping 次数
-     */
+
     fun updatePingCount(count: Int) {
         _pingCount.value = count
+        savePref { it.putInt(PREF_PING_COUNT, count) }
     }
 
     fun updateMaxConcurrentPings(count: Int) {
         _maxConcurrentPings.value = count
+        savePref { it.putInt(PREF_MAX_CONCURRENT_PINGS, count) }
     }
-    
-    /**
-     * 更新是否启用下载测速
-     */
+
     fun updateEnableDownloadTest(enabled: Boolean) {
         _enableDownloadTest.value = enabled
+        savePref { it.putBoolean(PREF_ENABLE_DOWNLOAD_TEST, enabled) }
     }
-    
-    /**
-     * 更新速度下限
-     */
+
     fun updateSpeedLimit(limit: Double) {
         _speedLimit.value = limit
+        savePref { it.putFloat(PREF_SPEED_LIMIT, limit.toFloat()) }
     }
-    
-    /**
-     * 更新延迟上限
-     */
+
     fun updateLatencyLimit(limit: Double) {
         _latencyLimit.value = limit
+        savePref { it.putFloat(PREF_LATENCY_LIMIT, limit.toFloat()) }
     }
-    
-    /**
-     * 更新下载测速 IP 数量
-     */
+
     fun updateDownloadTestCount(count: Int) {
         _downloadTestCount.value = count
+        savePref { it.putInt(PREF_DOWNLOAD_TEST_COUNT, count) }
     }
 
-    /**
-     * 更新下载测试时长 (秒)
-     */
     fun updateDownloadDuration(seconds: Int) {
         _downloadDuration.value = seconds
+        savePref { it.putInt(PREF_DOWNLOAD_DURATION, seconds) }
     }
 
-    /**
-     * 更新是否使用代理
-     */
     fun updateUseProxy(use: Boolean) {
         _useProxy.value = use
+        savePref { it.putBoolean(PREF_USE_PROXY, use) }
     }
-    
-    /**
-     * 更新代理 URL
-     */
+
     fun updateProxyUrl(url: String) {
         _proxyUrl.value = url
+        savePref { it.putString(PREF_PROXY_URL, url) }
+    }
+
+    fun updateEnableTargetProbe(enabled: Boolean) {
+        _enableTargetProbe.value = enabled
+        savePref { it.putBoolean(PREF_ENABLE_TARGET_PROBE, enabled) }
+    }
+
+    fun updateTargetDomain(domain: String) {
+        _targetDomain.value = domain
+        savePref { it.putString(PREF_TARGET_DOMAIN, domain) }
+    }
+
+    fun updateTargetWsPath(path: String) {
+        _targetWsPath.value = path
+        savePref { it.putString(PREF_TARGET_WS_PATH, path) }
     }
     
     /**
@@ -495,6 +552,50 @@ class SpeedTestViewModel(private val application: Application) : ViewModel() {
         _useIpv6.value = use
         _useSpecifiedIpSegments.value = false
         _selectedSpecifiedIpSegments.value = emptySet()
+        savePref { it.putBoolean(PREF_USE_IPV6, use) }
+    }
+
+    /**
+     * 一键恢复全部设置为官方推荐默认值
+     */
+    fun resetToDefaultSettings() {
+        _testCount.value = 100
+        _pingCount.value = 3
+        _maxConcurrentPings.value = 8
+        _enableDownloadTest.value = true
+        _downloadTestCount.value = 20
+        _downloadDuration.value = 10
+        _speedLimit.value = 0.0
+        _latencyLimit.value = 0.0
+        _useProxy.value = false
+        _proxyUrl.value = ""
+        _useIpv6.value = false
+        _useSpecifiedIpSegments.value = false
+        _selectedSpecifiedIpSegments.value = emptySet()
+        _enableTargetProbe.value = false
+        _targetDomain.value = ""
+        _targetWsPath.value = ""
+
+        savePref { editor ->
+            editor.putInt(PREF_TEST_COUNT, 100)
+            editor.putInt(PREF_PING_COUNT, 3)
+            editor.putInt(PREF_MAX_CONCURRENT_PINGS, 8)
+            editor.putBoolean(PREF_ENABLE_DOWNLOAD_TEST, true)
+            editor.putInt(PREF_DOWNLOAD_TEST_COUNT, 20)
+            editor.putInt(PREF_DOWNLOAD_DURATION, 10)
+            editor.putFloat(PREF_SPEED_LIMIT, 0f)
+            editor.putFloat(PREF_LATENCY_LIMIT, 0f)
+            editor.putBoolean(PREF_USE_PROXY, false)
+            editor.putString(PREF_PROXY_URL, "")
+            editor.putBoolean(PREF_USE_IPV6, false)
+            editor.putBoolean(PREF_ENABLE_TARGET_PROBE, false)
+            editor.putString(PREF_TARGET_DOMAIN, "")
+            editor.putString(PREF_TARGET_WS_PATH, "")
+        }
+
+        loadLocalIpRanges()
+        _statusMessage.value = "已恢复默认推荐设置"
+        Toast.makeText(application, "已恢复默认推荐设置", Toast.LENGTH_SHORT).show()
     }
 
     /**
@@ -831,7 +932,10 @@ class SpeedTestViewModel(private val application: Application) : ViewModel() {
                 downloadTestCount = _downloadTestCount.value,
                 pingFirst = true,
                 maxConcurrentDownloads = 5,
-                maxConcurrentPings = _maxConcurrentPings.value
+                maxConcurrentPings = _maxConcurrentPings.value,
+                enableTargetProbe = _enableTargetProbe.value,
+                targetDomain = _targetDomain.value,
+                targetWsPath = _targetWsPath.value
             )
 
             val currentResults = mutableListOf<SpeedTestResult>()
@@ -842,7 +946,7 @@ class SpeedTestViewModel(private val application: Application) : ViewModel() {
                     config = config,
                     onProgress = { progress ->
                         _progress.value = progress
-                        _statusMessage.value = "${progress.status} ${progress.currentIp}"
+                        _statusMessage.value = progress.status
                     },
                     onResult = { result ->
                         currentResults.add(result)
@@ -913,5 +1017,15 @@ class SpeedTestViewModel(private val application: Application) : ViewModel() {
      */
     fun getBestIp(): SpeedTestResult? {
         return _results.value.firstOrNull()
+    }
+
+    /**
+     * 清空当前测速结果
+     */
+    fun clearResults() {
+        if (!_isTesting.value) {
+            _results.value = emptyList()
+            _statusMessage.value = "已清空测速结果"
+        }
     }
 }
